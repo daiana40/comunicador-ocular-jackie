@@ -36,6 +36,21 @@
         }
         h1 { margin: 0; font-size: 24px; color: var(--cian-neon); text-shadow: 0 0 10px rgba(0,240,255,0.3); }
         #estado { font-weight: bold; color: #00ff66; font-size: 14px; }
+        #activar-camara {
+            align-self: flex-start;
+            background: #087f8c;
+            color: white;
+            border: 3px solid var(--cian-neon);
+            border-radius: 12px;
+            padding: 14px 20px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        #activar-camara:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
         
         /* Pantalla de Texto */
         #zona-texto {
@@ -155,6 +170,7 @@
         <h1>Comunicador Cyber-Assist v1.0</h1>
         <div id="estado">Iniciando cámara...</div>
     </header>
+    <button id="activar-camara" type="button">📷 ACTIVAR CÁMARA</button>
 
     <!-- Zona donde se escribe lo que el iPad va a hablar -->
     <div id="zona-texto">...</div>
@@ -316,45 +332,105 @@
         }
 
         const estado = document.getElementById('estado');
+        const botonCamara = document.getElementById('activar-camara');
         if (!window.Handsfree) {
             estado.innerText = "No se pudo cargar el rastreador ocular.";
+            botonCamara.disabled = true;
         } else if (!navigator.mediaDevices?.getUserMedia) {
             estado.innerText = "La cámara requiere HTTPS o un navegador compatible.";
+            botonCamara.disabled = true;
         } else {
-            const handsfree = new Handsfree({ weboji: true });
-            handsfree.enablePlugins('browser');
+            let handsfree;
+            let videoCamara;
             let yaHizoClic = false;
 
-            handsfree.use('clickPorPestañeo', (data) => {
-                if (!data.weboji?.morphs || !data.weboji.pointer) return;
+            function detenerCamara() {
+                videoCamara?.srcObject?.getTracks().forEach(track => track.stop());
+                if (videoCamara) videoCamara.srcObject = null;
+                videoCamara = undefined;
+            }
 
-                const ojoIzquierdoCerrado = data.weboji.morphs[0] > 0.80;
-                const ojoDerechoCerrado = data.weboji.morphs[1] > 0.80;
-                if (ojoIzquierdoCerrado && ojoDerechoCerrado) {
-                    if (yaHizoClic) return;
-                    yaHizoClic = true;
-
-                    const { x, y } = data.weboji.pointer;
-                    const elementoMirado = document.elementFromPoint(x, y);
-                    if (elementoMirado instanceof Element) {
-                        const boton = elementoMirado.closest('button');
-                        if (!boton || boton.disabled) return;
-                        if (boton.classList.contains('btn-chisme')) {
-                            hablar(boton.dataset.texto);
-                        } else if (boton.classList.contains('bloque-letras')) {
-                            manejarSeleccionBloque(boton);
-                        } else {
-                            boton.click();
-                        }
+            function configurarRastreador() {
+                handsfree = new Handsfree({
+                    weboji: {
+                        enabled: true,
+                        videoSettings: { videoElement: videoCamara }
                     }
-                } else {
-                    yaHizoClic = false;
+                });
+                handsfree.enablePlugins('browser');
+                handsfree.use('clickPorPestañeo', (data) => {
+                    if (!data.weboji?.morphs || !data.weboji.pointer) return;
+
+                    const ojoIzquierdoCerrado = data.weboji.morphs[8] > 0.40;
+                    const ojoDerechoCerrado = data.weboji.morphs[9] > 0.40;
+                    if (ojoIzquierdoCerrado && ojoDerechoCerrado) {
+                        if (yaHizoClic) return;
+                        yaHizoClic = true;
+
+                        const { x, y } = data.weboji.pointer;
+                        const elementoMirado = document.elementFromPoint(x, y);
+                        if (elementoMirado instanceof Element) {
+                            const boton = elementoMirado.closest('button');
+                            if (!boton || boton.disabled) return;
+                            if (boton.classList.contains('btn-chisme')) {
+                                hablar(boton.dataset.texto);
+                            } else if (boton.classList.contains('bloque-letras')) {
+                                manejarSeleccionBloque(boton);
+                            } else {
+                                boton.click();
+                            }
+                        }
+                    } else {
+                        yaHizoClic = false;
+                    }
+                });
+
+                handsfree.on('webojiModelReady', () => {
+                    estado.innerText = "Rastreador ocular listo";
+                    botonCamara.innerText = "✅ CÁMARA ACTIVA";
+                    botonCamara.disabled = true;
+                    actualizarPantalla();
+                });
+                handsfree.on('modelError', (error) => {
+                    console.error('No se pudo iniciar el rastreador ocular:', error);
+                    estado.innerText = "No se pudo iniciar el rastreador. Revisá tu conexión e intentá de nuevo.";
+                    detenerCamara();
+                    botonCamara.disabled = false;
+                    botonCamara.innerText = "📷 REINTENTAR CÁMARA";
+                });
+            }
+
+            botonCamara.addEventListener('click', async () => {
+                botonCamara.disabled = true;
+                estado.innerText = "Solicitando permiso para usar la cámara...";
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: false,
+                        video: { facingMode: 'user' }
+                    });
+                    videoCamara = document.createElement('video');
+                    videoCamara.autoplay = true;
+                    videoCamara.muted = true;
+                    videoCamara.playsInline = true;
+                    videoCamara.srcObject = stream;
+                    await videoCamara.play();
+                    configurarRastreador();
+                    estado.innerText = "Cámara activa. Cargando rastreador ocular...";
+                    handsfree.start();
+                } catch (error) {
+                    console.error('No se pudo acceder a la cámara:', error);
+                    detenerCamara();
+                    const mensajes = {
+                        NotAllowedError: "Permiso denegado. Habilitá la cámara en los ajustes del navegador.",
+                        NotFoundError: "No se encontró una cámara disponible en este dispositivo.",
+                        NotReadableError: "La cámara está siendo usada por otra aplicación."
+                    };
+                    estado.innerText = mensajes[error.name] || "No se pudo abrir la cámara. Revisá los permisos e intentá de nuevo.";
+                    botonCamara.disabled = false;
+                    botonCamara.innerText = "📷 REINTENTAR CÁMARA";
                 }
             });
 
-            handsfree.on('start', () => {
-                estado.innerText = "Rastreador ocular listo";
-                actualizarPantalla();
-            });
-            handsfree.start();
+            estado.innerText = "Tocá «ACTIVAR CÁMARA» y aceptá el permiso.";
+            actualizarPantalla();
         }
